@@ -7,11 +7,20 @@ from collections import deque
 
 import keras
 from keras import Sequential
+from keras.optimizers import Adam
 from tensorflow.keras.layers import Dense, Input
 
 
+import matplotlib
+import matplotlib.pyplot as plt
+
+import os
+
+
+
+
 class ReplayBuffer:
-    def __init__(self, maxlen = 2000):
+    def __init__(self, maxlen = 4000):
         self.buffer = deque(maxlen=maxlen)
 
 
@@ -24,16 +33,6 @@ class ReplayBuffer:
             return random.sample(self.buffer, len(self.buffer))
         else:
             return random.sample(self.buffer, batch_size)
-    """
-    def get_arrays_from_batch(self, batch):
-        states = np.array([x[0] for x in batch])
-        actions = np.array([x[1] for x in batch])
-        rewards = np.array([x[2] for x in batch])
-        next_states = np.array([(np.zeros(NUM_STATES) if x[3] is None else x[3])
-                                for x in batch])
-
-        return states, actions, rewards, next_states
-    """
 
     def get_size(self):
         return len(self.buffer)
@@ -41,9 +40,10 @@ class ReplayBuffer:
 
 
 GAMMA = 0.9
-ALPHA = 0.5
+#ALPHA = 0.5
 EPSILON = 1.0
 EPSILON_MIN = 0.1
+LEARNING_RATE = 0.001
 
 
 class DDQN:
@@ -54,7 +54,7 @@ class DDQN:
         """
 
         # Initialize attributes
-        self.state_size = state_space # TODO: FIX THIS|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\\
+        self.state_size = state_space # TODO: FIX THIS||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
         self.action_space = action_space
 
         # discount rate -- gamma determines how much the agent prioritizes current over future rewards.
@@ -70,7 +70,7 @@ class DDQN:
         # build networks--------------------------------------------------------
         # q-network
         self.q_network = self.build_network('q_network')
-        self.q_network.compile(optimizer='adam', loss='mse')
+        self.q_network.compile(optimizer=Adam(learning_rate=LEARNING_RATE), loss='mse')
 
         # target network
         self.target_network = self.build_network('target_network')
@@ -83,6 +83,17 @@ class DDQN:
     def buffer_size(self):
         return self.buffer.get_size()
 
+    def make_interval(self,state):
+        state_interval = list(range((state[0]-2), (state[0]+2+1)))
+        #(remove from the intervals all the values < 0 and >= max length of the signal)
+        state_interval = [item for item in state_interval if (item >= 0) & (item < self.state_size.n)]
+        if len(state_interval)==3:
+            state_interval.insert(0,0)
+            state_interval.insert(4,0)
+        if len(state_interval)==4:
+            state_interval.insert(0,0)
+        return np.array(state_interval).reshape(1,-1)
+
     def act(self, state):
         """
         Agent chooses the action following the epsilon-greedy policy. This
@@ -94,25 +105,14 @@ class DDQN:
         if np.random.rand() < self.epsilon:
             return self.action_space.sample() #sample() is a function of spaces.Discrete()
         else:
-            q_values = self.q_network.predict(state) # TODO: CHECK WHAT IS THE OUTPUT!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!111
+            state_interval = self.make_interval(state)
+
+            q_values = self.q_network.predict(state_interval)
             action = np.argmax(q_values[0])
             return action
 
-    def get_target_q_value(self, next_state, reward):
-        """ it computes the target q_value
-        Arguments:  - next_state: next state
-                    - reward: reward obtained after making action from state
-        Returs: - q_value: target q-value
 
-        """
-        # q_network selects the action a'_max = argmax_a' Q(s',a')
-        action = np.argmax(self.q_network.predict(next_state)[0])
-        # target network evaluated the q value Q_max = Q_target(s',a'_max)
-        q_value = self.target_network.predict(next_state)[0][action]
-        # return the qvalue Q_max = reward + gamma*Q_max
-        q_value *= self.gamma
-        q_value += reward
-        return q_value
+
 
 
     def update_target_model(self):
@@ -129,14 +129,15 @@ class DDQN:
         """
         It builds the network architecture
         """
-        input_size = self.state_size.n
+        input_size = 5
         output_size = self.action_space.n
 
         net = Sequential(name=network_name)
         net.add(Input(shape=(input_size,)))
         net.add(Dense(8, activation='relu'))
         net.add(Dense(8, activation='relu'))
-        net.add(Dense(output_size, activation='linear'))
+        net.add(Dense(output_size, activation='softmax'))
+
         # add BatchNormalization, Dropout, kernel initializer? bias initializer?
         net.summary()
         #model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
@@ -149,44 +150,107 @@ class DDQN:
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-
     def store_trajectory(self, state, action, reward, next_state, done):
         """
         Store a trajectory (sars) in the replay buffer
         """
         self.buffer.store(state, action, reward, next_state, done)
 
+        """
+        state is a tuple (position, d), giving these 2 informations I create an
+        interval [position-d,position+d] that will be the input of the network. The
+        network accepts 5 nodes in input...if d=1 I zero-pad the interval in order
+        to reach dimension (5,)....then I transform this list to a numpy array with
+        shape (1,5)
+        """
+
+'''
+    def get_target_q_value(self, next_state, reward):
+        """ it computes the target q_value
+        Arguments:  - next_state: next state
+                    - reward: reward obtained after making action from state
+        Returs: - q_value: target q-value
+        """
+        next_state_interval = self.make_interval(next_state)
+
+        print("      next state interval: ", next_state_interval)
+
+        # q_network selects the action a'_max = argmax_a' Q(s',a')
+        action = np.argmax(self.q_network.predict(next_state_interval)[0])
+        print("      (qnet) next state q values: ", self.q_network.predict(next_state_interval)[0])
+        print("      choosed action:", action)
+        # target network evaluated the q value Q_max = Q_target(s',a'_max)
+        q_value = self.target_network.predict(next_state_interval)[0][action]
+        print("      (tnet) next state q values: ", self.target_network.predict(next_state_interval)[0])
+        print("      q_value: ", q_value)
+        # return the qvalue Q_max = reward + gamma*Q_max
+        q_value *= self.gamma
+        q_value += reward
+        return q_value
+
+'''
 
     def replay(self, batch_size):
+
         # get a batch of trajectories from replay buffer
         sars_batch = self.buffer.get_batch(batch_size)
         state_batch = []
         q_values_batch = []
 
+        print("start for cycle in BATCH of size: ", batch_size)
+        i=0
         for state,action,reward,next_state,done in sars_batch:
             # create input for q_network
-            '''
-            print(state)
-            print(action)
-            print(next_state)
-            input = list(range((state[0]-2), (state[0]+2+1)))
-            input = np.clip(input, 0, 100 - 1)
-            print(input)
+            print(i)
+
+            print("state: ", state)
+            print("action: ", action)
+            print("next state: ", next_state)
+            print("reward: ", reward)
+            print("done:", done)
+            state_interval = self.make_interval(state)
+            next_state_interval = self.make_interval(next_state)
+
             '''
             # prediction on a certain state
-            q_values = self.q_network.predict(input) #--> ouput layer given a state in input of the q_network
+            q_values = self.q_network.predict(state_interval) #--> ouput layer given a state in input of the q_network
+            print("q_values: ", q_values)
             # get target q_value
+            print("call get_target_q_value(next_state, reward):.....")
             q_value = self.get_target_q_value(next_state,reward)
-            q_values[0][action] = reward if done else q_value
 
-            #collect batch state-q-value mapping
-            state_batch.append(state[0])
+            print("updated q_value (with bellman): ", q_value)
+            #correction on the q value for the action used
+            q_values[0][action] = reward if done else q_value
+            print("predicted q_value:", q_values[0][action])
+
+
+            # collect batch state-q-value mapping
+            state_batch.append(state_interval[0])
             q_values_batch.append(q_values[0])
+            '''
+            target = self.q_network.predict(state_interval)
+            if done:
+                target[0][action] = reward
+            else:
+                next_action = np.argmax(self.q_network.predict(next_state_interval)[0])
+                target[0][action] = reward + self.gamma * self.target_network.predict(next_state_interval)[0][next_action]
+
+            # collect batch state-q-value mapping
+            state_batch.append(state_interval[0])
+            target_batch.append(target[0])
+
+            i+=1
+
+        # perform one step of gradient descent
+        self.q_network.fit(np.array(state_batch), np.array(target_batch), epochs=1, verbose=1)
+
+
 
 
 
         # train the q-network
-        self.q_network.fit(np.array(state_batch), np.array(q_values_batch), batch_size=batch_size, epochs=1, verbose=0)
+        #self.q_network.fit(np.array(state_batch), np.array(q_values_batch), batch_size=batch_size, epochs=1, verbose=1)
 
 
         # update explotation-exploitation rate
@@ -196,101 +260,42 @@ class DDQN:
         C = 10
         if self.counter % C == 0:
             self.update_target_model()
+            print('UPDATE TARGET NETWORK PARAMETERS....')
         self.counter += 1
 
 
 
+    def save(self, folder_name):
+
+        # Create the folder for saving the agent
+        if not os.path.isdir(folder_name):
+            os.makedirs(folder_name)
+
+        # Save DQN and target DQN
+        self.q_network.save(folder_name + '/q_net.h5')
+        self.target_network.save(folder_name + '/target_q_net.h5')
+        # Save replay buffer
+        self.buffer.save(folder_name + '/replay-buffer')
+
+        #json?
+        # Save meta
+        #with open(folder_name + '/meta.json', 'w+') as f:
+        #    f.write(json.dumps({**{'buff_count': self.replay_buffer.count, 'buff_curr': self.replay_buffer.current}, **kwargs}))  # save replay_buffer information and any other information
 
 
+    def load(self, folder_name, load_buffer = True):
+        if not os.path.isdir(folder_name):
+            raise ValueError(f'{folder_name} is not a valid directory')
+
+        # Load networks
+        self.q_network = tf.keras.models.load_model(folder_name + '/dqn.h5')
+        self.target_network = tf.keras.models.load_model(folder_name + '/target_dqn.h5')
+
+        # Load replay buffer
+        if load_buffer:
+            self.buffer.load(folder_name + '/replay-buffer')
 
 
-def generate_signal(seed=0):
-	x = np.linspace(0, 100, 100) #start value of the sequence, end value of the seqence, number of samples to generate. Default is 50.
-	mask1 = (x>=10) & (x<=17)
-	mask2 = (x>=28) & (x<=35)
-	mask3 = (x>=64) & (x<=77)
-	mask4 = (x>=88) & (x<=93)
-
-	y = np.where(mask1, 20, 0) + np.where(mask2, 10, 0) + np.where(mask3, 30, 0) + np.where(mask4, 5, 0)
-	np.random.seed(seed)
-	noise = np.random.normal(0,0.5,100)
-
-	return [x,y + noise]
-
-
-
-
-
-if __name__ == "__main__":
-    """
-    [x, signal] = generate_signal()
-    env = gym.make('Signal-v0')
-    obs = env.reset()
-
-    state_space = env.observation_space
-    action_space = env.action_space
-    print("Observation space:", state_space)
-    print("Action space:", action_space)
-
-    v = action_space.sample()
-    print()
-    print(f'Space: {action_space}')
-    print(f'Sample: {v}')
-    print(f'Flatdim = {gym.spaces.flatdim(action_space)}')
-    print(f'Flatten = {gym.spaces.flatten(action_space, v)}')
-    """
-
-
-
-
-    [x, signal] = generate_signal()
-    env = gym.make('Signal-v0')
-    state_space = env.observation_space
-    action_space = env.action_space
-    print("Observation space:", state_space)
-    print("Action space:", action_space)
-
-    n_episodes = 1
-    ddqn_agent = DDQN(state_space, action_space, n_episodes)
-
-    for episode in range(n_episodes):
-
-        #reset environment at the beginning of every episode
-        state = env.reset()
-
-        print("state: ", state)
-        total_reward = 0
-        done = False
-        i=0
-        while not done:
-            # choose an action
-            action = ddqn_agent.act(state)
-            print("action: ", action)
-
-            # make that action and observe reward and next state
-            next_state, reward, done, _ = env.step(action)
-
-            # save the trajectory in the memory buffer
-            ddqn_agent.store_trajectory(state, action, reward, next_state, done)
-            print("next state:", next_state) #next state
-            print("reward:",reward)
-            print("done:",done)
-
-            # the new state becomes the current state
-            state = next_state
-            # accumulate reward for a single episode
-            total_reward += reward
-
-            #if i == 10: done=True
-            i += 1
-            print("total reward: ", total_reward)
-            print("buffer size: ", ddqn_agent.buffer.get_size())
-
-            ddqn_agent.replay(10)
-            print("epsilon:", ddqn_agent.epsilon)
-            #print("len buffer: ", ddqn.buffer.buffer_size())
-            print('-----------------------------------------')
-        print("# iterations of an epoch:", i)
 
 
 
@@ -327,4 +332,14 @@ for episode in range(episode_count):
         break
     if (episode + 1) % win_trials == 0:
         print("Episode %d: Mean survival = %0.2lf in %d episodes" % ((episode + 1), mean_score, win_trials))
+"""
+
+
+"""
+v = action_space.sample()
+print()
+print(f'Space: {action_space}')
+print(f'Sample: {v}')
+print(f'Flatdim = {gym.spaces.flatdim(action_space)}')
+print(f'Flatten = {gym.spaces.flatten(action_space, v)}')
 """
