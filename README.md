@@ -1,1 +1,1 @@
-# DDQN-for-signal
+# DDQN-for-event-detection
